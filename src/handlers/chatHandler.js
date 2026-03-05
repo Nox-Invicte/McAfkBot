@@ -7,14 +7,17 @@ function sendChat(client, message){
 
     if(!message || message.trim() === "") return
 
-    // Try to parse player message format: "PlayerName: message" or "<PlayerName> message"
-    const playerMatch = message.match(/^(?:<(.+?)>|(.+?):)\s*(.+)$/)
+    // Try to parse player message formats:
+    // Format 1: "[level] RANK *PlayerName » message"
+    // Format 2: "<PlayerName> message"
+    // Format 3: "PlayerName: message"
+    const playerMatch = message.match(/^(?:\[.*?\]\s*\w+\s*)?(\*?.+?)\s*(?:»|:|>)\s*(.+)$/)
     
     if(config.chatWebhook && playerMatch) {
         // Player message - send via webhook with player name and avatar
-        const username = playerMatch[1] || playerMatch[2]
-        const content = playerMatch[3]
-        const avatarURL = `https://mc-heads.net/avatar/${username}/100` || `https://mc-heads.net/avatar/${username}/100` || "https://mc-heads.net/avatar/MHF_Steve/100"
+        const username = playerMatch[1].trim()
+        const content = playerMatch[2].trim()
+        const avatarURL = `https://mc-heads.net/avatar/${username}/100`
         
         sendWebhook(config.chatWebhook, {
             content: content,
@@ -26,7 +29,7 @@ function sendChat(client, message){
         sendWebhook(config.chatWebhook, {
             content: message,
             username: "SERVER",
-            avatar_url: "https://mc-heads.net/avatar/Server/100"
+            avatar_url: "https://mc-heads.net/avatar/MHF_Steve/100"
         })
     } else {
         // Fallback to regular channel message
