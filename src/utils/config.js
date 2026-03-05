@@ -8,6 +8,7 @@ module.exports = {
 
     logChannel: process.env.LOG_CHANNEL_ID,
     chatChannel: process.env.CHAT_CHANNEL_ID,
+    chatWebhook: process.env.CHAT_WEBHOOK_URL,
 
     joinCommand: process.env.JOIN_COMMAND
 }
