@@ -7,21 +7,22 @@ function sendChat(client, message){
 
     if(!message || message.trim() === "") return
 
-    // Try to parse player message formats:
-    // Format 1: "[level] RANK *PlayerName » message"
-    // Format 2: "<PlayerName> message"
-    // Format 3: "PlayerName: message"
-    const playerMatch = message.match(/^(?:\[.*?\]\s*\w+\s*)?(\*?.+?)\s*(?:»|:|>)\s*(.+)$/)
+    // Try to parse player message - capture everything before separator as username
+    const playerMatch = message.match(/^(.+?)\s*(?:»|:|>)\s*(.+)$/)
     
     if(config.chatWebhook && playerMatch) {
-        // Player message - send via webhook with player name and avatar
-        const username = playerMatch[1].trim()
+        // Player message - send via webhook with full rank/level and player name
+        const fullUsername = playerMatch[1].trim()
         const content = playerMatch[2].trim()
-        const avatarURL = `https://mc-heads.net/avatar/${username}/100`
+        
+        // Extract just the player name (last word with optional *) for avatar
+        const playerNameMatch = fullUsername.match(/(\*?\w+)\s*$/)
+        const playerName = playerNameMatch ? playerNameMatch[1] : fullUsername
+        const avatarURL = `https://mc-heads.net/avatar/${playerName}/100`
         
         sendWebhook(config.chatWebhook, {
             content: content,
-            username: username,
+            username: fullUsername,
             avatar_url: avatarURL
         })
     } else if(config.chatWebhook) {

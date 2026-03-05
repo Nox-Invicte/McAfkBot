@@ -83,13 +83,6 @@ async function startMinecraftBot(discordClient){
         skipPing: true
     })
 
-    // Debug: Log all packets to identify chat packets
-    mcClient.on("packet", (packet) => {
-        if(packet.data && packet.data.message && packet.data.message.length > 0) {
-            logger.info(`[PACKET] ${packet.name}: ${JSON.stringify(packet.data)}`)
-        }
-    })
-
     mcClient.on("spawn", () => {
 
         logger.info("Player spawned")
