@@ -11,6 +11,53 @@ const { sendChat } = require("../handlers/chatHandler")
 
 let mcClient = null
 
+const SMALL_CAPS_MAP = {
+    "ᴀ": "a", "ʙ": "b", "ᴄ": "c", "ᴅ": "d", "ᴇ": "e", "ꜰ": "f",
+    "ɢ": "g", "ʜ": "h", "ɪ": "i", "ᴊ": "j", "ᴋ": "k", "ʟ": "l",
+    "ᴍ": "m", "ɴ": "n", "ᴏ": "o", "ᴘ": "p", "ǫ": "q", "ʀ": "r",
+    "ꜱ": "s", "ᴛ": "t", "ᴜ": "u", "ᴠ": "v", "ᴡ": "w", "ʏ": "y",
+    "ᴢ": "z"
+}
+
+const PLAYER_CHAT_REGEX = /^(.+?)\s*(?:»|:|>)\s*(.+)$/
+const FILTERED_SERVER_MESSAGE_FRAGMENTS = [
+    "upgrade your island with /is upgrade",
+    "break your oneblock to progress",
+    "learn how to make money with /economy",
+    "earn free rewards in the afk zone [/afk]",
+    "view oneblock phases with /oneblock phases",
+    "you can visit spawn by typing /spawn"
+]
+
+function normalizeForComparison(text) {
+    const normalized = text
+        .normalize("NFKC")
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim()
+
+    return Array.from(normalized)
+        .map(char => SMALL_CAPS_MAP[char] || char)
+        .join("")
+        .replace(/&/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+}
+
+function shouldIgnoreIncomingMessage(message) {
+    const trimmed = message.trim()
+    const isServerMessage = !PLAYER_CHAT_REGEX.test(trimmed)
+
+    if (!isServerMessage) return false
+
+    if (trimmed.startsWith("❙")) {
+        return true
+    }
+
+    const normalized = normalizeForComparison(trimmed)
+    return FILTERED_SERVER_MESSAGE_FRAGMENTS.some(fragment => normalized.includes(fragment))
+}
+
 // Restore auth files from environment variables
 function restoreAuthFromEnv() {
     const authDir = path.join(__dirname, "../../auth")
@@ -126,6 +173,8 @@ async function startMinecraftBot(discordClient){
         const cleanMessage = packet.message.replace(/§./g, "").trim()
         
         if(cleanMessage === "") return
+
+        if(shouldIgnoreIncomingMessage(cleanMessage)) return
 
         logger.info(`[MC Chat] ${cleanMessage}`)
         sendChat(discordClient, cleanMessage)
