@@ -236,7 +236,9 @@ async function startMinecraftBot(discordClient){
 
             sendLog(discordClient,"🔄 Reconnecting...")
 
-            startMinecraftBot(discordClient)
+            startMinecraftBot(discordClient).catch((err) => {
+                logger.error(`Reconnect attempt failed: ${err.message}`)
+            })
 
         },10000)
 
