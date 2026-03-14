@@ -10,6 +10,12 @@ const { sendLog } = require("../handlers/logHandler")
 const { sendChat } = require("../handlers/chatHandler")
 
 let mcClient = null
+const lastErrorLogTime = new Map()
+const suppressedNonFatalErrors = new Set()
+
+const NON_FATAL_ERROR_PATTERNS = [
+    /Read error for undefined\s*:\s*Invalid tag:\s*\d+\s*>\s*20/i
+]
 
 const SMALL_CAPS_MAP = {
     "ᴀ": "a", "ʙ": "b", "ᴄ": "c", "ᴅ": "d", "ᴇ": "e", "ꜰ": "f",
@@ -56,6 +62,34 @@ function shouldIgnoreIncomingMessage(message) {
 
     const normalized = normalizeForComparison(trimmed)
     return FILTERED_SERVER_MESSAGE_FRAGMENTS.some(fragment => normalized.includes(fragment))
+}
+
+function isNonFatalMcError(message) {
+    return NON_FATAL_ERROR_PATTERNS.some(pattern => pattern.test(message))
+}
+
+function shouldSkipDuplicateError(message, windowMs = 30000) {
+    const now = Date.now()
+    const lastLogAt = lastErrorLogTime.get(message)
+
+    if (lastLogAt && now - lastLogAt < windowMs) {
+        return true
+    }
+
+    lastErrorLogTime.set(message, now)
+
+    // Keep map size bounded for long-running processes.
+    if (lastErrorLogTime.size > 200) {
+        const entries = Array.from(lastErrorLogTime.entries())
+            .sort((a, b) => a[1] - b[1])
+            .slice(0, 50)
+
+        for (const [key] of entries) {
+            lastErrorLogTime.delete(key)
+        }
+    }
+
+    return false
 }
 
 // Restore auth files from environment variables
@@ -120,14 +154,23 @@ async function startMinecraftBot(discordClient){
         }
     )
 
+    if (config.mcVersion) {
+        logger.info(`Using pinned Bedrock version: ${config.mcVersion}`)
+    } else if (!config.mcSkipPing) {
+        logger.info("Bedrock version auto-detection is enabled")
+    } else {
+        logger.warn("Using default Bedrock protocol version because MC_SKIP_PING is enabled and MC_VERSION is not set")
+    }
+
     mcClient = bedrock.createClient({
         host: config.server,
         port: config.port,
         username: config.username,
+        version: config.mcVersion,
         profilesFolder: "./auth",
         flow: "live",
         authTitle: "00000000441cc96b",
-        skipPing: true
+        skipPing: config.mcSkipPing
     })
 
     mcClient.on("spawn", () => {
@@ -201,9 +244,23 @@ async function startMinecraftBot(discordClient){
 
     mcClient.on("error",(err)=>{
 
-        logger.error(err.message)
+        const message = err?.message || String(err)
 
-        sendLog(discordClient,`⚠️ Error: ${err.message}`)
+        if (isNonFatalMcError(message)) {
+            if (!suppressedNonFatalErrors.has(message)) {
+                suppressedNonFatalErrors.add(message)
+                logger.warn(`Suppressing non-fatal packet parse error: ${message}`)
+            }
+            return
+        }
+
+        if (shouldSkipDuplicateError(message)) {
+            return
+        }
+
+        logger.error(message)
+
+        sendLog(discordClient,`⚠️ Error: ${message}`)
 
     })
 
