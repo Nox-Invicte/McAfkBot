@@ -25,10 +25,13 @@ const client = new Client({
 const DISCORD_LOGIN_TIMEOUT_MS = Number(process.env.DISCORD_LOGIN_TIMEOUT_MS || 30000)
 const DISCORD_PREFLIGHT_TIMEOUT_MS = Number(process.env.DISCORD_PREFLIGHT_TIMEOUT_MS || 10000)
 const DISCORD_PREFLIGHT_MAX_RETRIES = Number(process.env.DISCORD_PREFLIGHT_MAX_RETRIES || 2)
+const DISCORD_PREFLIGHT_COOLDOWN_MS = Number(process.env.DISCORD_PREFLIGHT_COOLDOWN_MS || 300000)
 const DISCORD_LOGIN_MAX_ATTEMPTS = Number(process.env.DISCORD_LOGIN_MAX_ATTEMPTS || 0)
 const DISCORD_LOGIN_RETRY_BASE_MS = Number(process.env.DISCORD_LOGIN_RETRY_BASE_MS || 3000)
 const DISCORD_LOGIN_RETRY_MAX_MS = Number(process.env.DISCORD_LOGIN_RETRY_MAX_MS || 60000)
 const DISCORD_STARTUP_JITTER_MAX_MS = Number(process.env.DISCORD_STARTUP_JITTER_MAX_MS || 10000)
+
+let preflightCooldownUntil = 0
 
 function getTokenFingerprint(token) {
     if (!token) return "none"
@@ -48,6 +51,24 @@ function parseJsonSafe(value) {
 }
 
 function getRetryDelayMs(response) {
+    const retryAfterHeader = response.headers?.["retry-after"]
+    if (retryAfterHeader !== undefined) {
+        const retryAfterSeconds = Number(retryAfterHeader)
+        if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+            return Math.max(1000, Math.ceil(retryAfterSeconds * 1000))
+        }
+
+        const retryAfterDate = Date.parse(String(retryAfterHeader))
+        if (Number.isFinite(retryAfterDate)) {
+            return Math.max(1000, retryAfterDate - Date.now())
+        }
+    }
+
+    const resetAfterHeader = Number(response.headers?.["x-ratelimit-reset-after"])
+    if (Number.isFinite(resetAfterHeader) && resetAfterHeader >= 0) {
+        return Math.max(1000, Math.ceil(resetAfterHeader * 1000))
+    }
+
     const body = parseJsonSafe(response.body)
 
     const retryAfterSeconds = Number(body?.retry_after)
@@ -102,7 +123,8 @@ function discordApiRequest(pathname) {
                 res.on("end", () => {
                     resolve({
                         status: res.statusCode || 0,
-                        body
+                        body,
+                        headers: res.headers || {}
                     })
                 })
             }
@@ -121,16 +143,26 @@ function discordApiRequest(pathname) {
 }
 
 async function runDiscordPreflight() {
+    const now = Date.now()
+    if (preflightCooldownUntil > now) {
+        const remainingMs = preflightCooldownUntil - now
+        const err = new Error(`Discord preflight cooldown active after repeated 429 responses (${Math.ceil(remainingMs / 1000)}s remaining)`)
+        err.retryAfterMs = remainingMs
+        throw err
+    }
+
     logger.info(`Discord API preflight check (timeout: ${DISCORD_PREFLIGHT_TIMEOUT_MS}ms)...`)
 
     async function checkEndpoint({ name, path, onSuccessMessage }) {
         let response = null
+        let last429WaitMs = 0
 
         for (let attempt = 0; attempt <= DISCORD_PREFLIGHT_MAX_RETRIES; attempt++) {
             response = await discordApiRequest(path)
 
             if (response.status === 429) {
                 const waitMs = getRetryDelayMs(response)
+                last429WaitMs = Math.max(last429WaitMs, waitMs)
 
                 if (attempt < DISCORD_PREFLIGHT_MAX_RETRIES) {
                     logger.warn(`${name} preflight rate-limited (429). Retrying in ${waitMs}ms...`)
@@ -138,8 +170,11 @@ async function runDiscordPreflight() {
                     continue
                 }
 
-                logger.warn(`${name} preflight still rate-limited after retries. Continuing with login attempt.`)
-                return
+                logger.warn(`${name} preflight still rate-limited after retries.`)
+                return {
+                    rateLimited: true,
+                    waitMs: last429WaitMs
+                }
             }
 
             if (response.status === 401) {
@@ -151,21 +186,43 @@ async function runDiscordPreflight() {
             }
 
             logger.info(onSuccessMessage)
-            return
+            return {
+                rateLimited: false,
+                waitMs: 0
+            }
+        }
+
+        return {
+            rateLimited: false,
+            waitMs: 0
         }
     }
 
-    await checkEndpoint({
+    const meResult = await checkEndpoint({
         name: "/users/@me",
         path: "/api/v10/users/@me",
         onSuccessMessage: "Discord token accepted by API"
     })
 
-    await checkEndpoint({
+    const gatewayResult = await checkEndpoint({
         name: "/gateway/bot",
         path: "/api/v10/gateway/bot",
         onSuccessMessage: "Discord gateway endpoint reachable via HTTPS"
     })
+
+    if (meResult.rateLimited || gatewayResult.rateLimited) {
+        const cooldownMs = Math.max(
+            DISCORD_PREFLIGHT_COOLDOWN_MS,
+            meResult.waitMs || 0,
+            gatewayResult.waitMs || 0
+        )
+
+        preflightCooldownUntil = Date.now() + cooldownMs
+
+        const err = new Error(`Discord API preflight repeatedly rate-limited (429). Cooling down for ${Math.ceil(cooldownMs / 1000)}s before next attempt`)
+        err.retryAfterMs = cooldownMs
+        throw err
+    }
 }
 
 function safeReply(message, content) {
@@ -303,7 +360,12 @@ async function startDiscordWithRetry() {
                 throw err
             }
 
-            const waitMs = getLoginRetryDelayMs(attempt)
+            let waitMs = getLoginRetryDelayMs(attempt)
+            const retryAfterMs = Number(err?.retryAfterMs)
+            if (Number.isFinite(retryAfterMs) && retryAfterMs > waitMs) {
+                waitMs = retryAfterMs
+            }
+
             logger.warn(`Retrying Discord login in ${waitMs}ms...`)
 
             try {
