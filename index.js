@@ -1,4 +1,14 @@
+const dns = require("dns")
 const express = require("express")
+
+try {
+    if (typeof dns.setDefaultResultOrder === "function") {
+        dns.setDefaultResultOrder("ipv4first")
+        console.log("[INFO] DNS result order set to ipv4first")
+    }
+} catch (err) {
+    console.log(`[WARN] Unable to set DNS result order: ${err.message}`)
+}
 
 // Start Discord bot
 require("./src/bot/discordBot")

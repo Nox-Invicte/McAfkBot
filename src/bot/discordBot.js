@@ -1,4 +1,6 @@
 const { Client, Intents } = require("discord.js")
+const https = require("https")
+const crypto = require("crypto")
 
 const config = require("../utils/config")
 const logger = require("../utils/logger")
@@ -21,6 +23,73 @@ const client = new Client({
 })
 
 const DISCORD_LOGIN_TIMEOUT_MS = Number(process.env.DISCORD_LOGIN_TIMEOUT_MS || 30000)
+const DISCORD_PREFLIGHT_TIMEOUT_MS = Number(process.env.DISCORD_PREFLIGHT_TIMEOUT_MS || 10000)
+
+function getTokenFingerprint(token) {
+    if (!token) return "none"
+    return crypto.createHash("sha256").update(token).digest("hex").slice(0, 12)
+}
+
+function discordApiRequest(pathname) {
+    return new Promise((resolve, reject) => {
+        const request = https.request(
+            {
+                hostname: "discord.com",
+                path: pathname,
+                method: "GET",
+                headers: {
+                    Authorization: `Bot ${config.discordToken}`
+                }
+            },
+            (res) => {
+                let body = ""
+                res.on("data", (chunk) => {
+                    body += chunk
+                })
+                res.on("end", () => {
+                    resolve({
+                        status: res.statusCode || 0,
+                        body
+                    })
+                })
+            }
+        )
+
+        request.on("error", (err) => {
+            reject(err)
+        })
+
+        request.setTimeout(DISCORD_PREFLIGHT_TIMEOUT_MS, () => {
+            request.destroy(new Error(`Request timeout after ${DISCORD_PREFLIGHT_TIMEOUT_MS}ms`))
+        })
+
+        request.end()
+    })
+}
+
+async function runDiscordPreflight() {
+    logger.info(`Discord API preflight check (timeout: ${DISCORD_PREFLIGHT_TIMEOUT_MS}ms)...`)
+
+    const me = await discordApiRequest("/api/v10/users/@me")
+
+    if (me.status === 401) {
+        throw new Error("DISCORD_TOKEN rejected by Discord API (401 Unauthorized)")
+    }
+
+    if (me.status < 200 || me.status >= 300) {
+        throw new Error(`Discord API preflight failed for /users/@me with status ${me.status}`)
+    }
+
+    logger.info("Discord token accepted by API")
+
+    const gateway = await discordApiRequest("/api/v10/gateway/bot")
+
+    if (gateway.status < 200 || gateway.status >= 300) {
+        throw new Error(`Discord API preflight failed for /gateway/bot with status ${gateway.status}`)
+    }
+
+    logger.info("Discord gateway endpoint reachable via HTTPS")
+}
 
 function safeReply(message, content) {
     message.reply(content).catch((err) => {
@@ -109,6 +178,9 @@ client.on("messageCreate",(msg)=>{
 })
 
 async function loginDiscordWithTimeout() {
+    logger.info(`Discord token fingerprint: ${getTokenFingerprint(config.discordToken)} (len=${config.discordToken?.length || 0})`)
+    await runDiscordPreflight()
+
     logger.info(`Attempting Discord login (timeout: ${DISCORD_LOGIN_TIMEOUT_MS}ms)...`)
 
     const loginPromise = client.login(config.discordToken)
@@ -125,7 +197,7 @@ async function loginDiscordWithTimeout() {
 if (configValidation.isValid) {
     loginDiscordWithTimeout().catch((err) => {
         logger.error(`Discord login failed: ${err.message}`)
-        logger.error("Troubleshooting: verify DISCORD_TOKEN is current, has no quotes/prefix, and host can reach discord.com")
+        logger.error("Troubleshooting: if preflight passed but login timed out, check outbound websocket access to gateway.discord.gg:443")
     })
 }
 
