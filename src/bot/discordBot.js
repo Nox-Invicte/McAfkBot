@@ -25,6 +25,10 @@ const client = new Client({
 const DISCORD_LOGIN_TIMEOUT_MS = Number(process.env.DISCORD_LOGIN_TIMEOUT_MS || 30000)
 const DISCORD_PREFLIGHT_TIMEOUT_MS = Number(process.env.DISCORD_PREFLIGHT_TIMEOUT_MS || 10000)
 const DISCORD_PREFLIGHT_MAX_RETRIES = Number(process.env.DISCORD_PREFLIGHT_MAX_RETRIES || 2)
+const DISCORD_LOGIN_MAX_ATTEMPTS = Number(process.env.DISCORD_LOGIN_MAX_ATTEMPTS || 0)
+const DISCORD_LOGIN_RETRY_BASE_MS = Number(process.env.DISCORD_LOGIN_RETRY_BASE_MS || 3000)
+const DISCORD_LOGIN_RETRY_MAX_MS = Number(process.env.DISCORD_LOGIN_RETRY_MAX_MS || 60000)
+const DISCORD_STARTUP_JITTER_MAX_MS = Number(process.env.DISCORD_STARTUP_JITTER_MAX_MS || 10000)
 
 function getTokenFingerprint(token) {
     if (!token) return "none"
@@ -52,6 +56,31 @@ function getRetryDelayMs(response) {
     }
 
     return 3000
+}
+
+function getLoginRetryDelayMs(attemptNumber) {
+    const exponential = DISCORD_LOGIN_RETRY_BASE_MS * Math.pow(2, Math.max(0, attemptNumber - 1))
+    const capped = Math.min(exponential, DISCORD_LOGIN_RETRY_MAX_MS)
+    const jitter = Math.floor(Math.random() * 1000)
+    return capped + jitter
+}
+
+function shouldRetryLogin(errorMessage) {
+    const normalized = String(errorMessage || "").toLowerCase()
+
+    if (normalized.includes("401") || normalized.includes("invalid token") || normalized.includes("rejected by discord api")) {
+        return false
+    }
+
+    return [
+        "timed out",
+        "429",
+        "econnreset",
+        "etimedout",
+        "eai_again",
+        "enotfound",
+        "gateway"
+    ].some((term) => normalized.includes(term))
 }
 
 function discordApiRequest(pathname) {
@@ -226,7 +255,6 @@ client.on("messageCreate",(msg)=>{
 })
 
 async function loginDiscordWithTimeout() {
-    logger.info(`Discord token fingerprint: ${getTokenFingerprint(config.discordToken)} (len=${config.discordToken?.length || 0})`)
     await runDiscordPreflight()
 
     logger.info(`Attempting Discord login (timeout: ${DISCORD_LOGIN_TIMEOUT_MS}ms)...`)
@@ -242,10 +270,58 @@ async function loginDiscordWithTimeout() {
     logger.info("Discord login request accepted")
 }
 
+async function startDiscordWithRetry() {
+    logger.info(`Discord token fingerprint: ${getTokenFingerprint(config.discordToken)} (len=${config.discordToken?.length || 0})`)
+
+    if (DISCORD_STARTUP_JITTER_MAX_MS > 0) {
+        const jitterMs = Math.floor(Math.random() * DISCORD_STARTUP_JITTER_MAX_MS)
+        if (jitterMs > 0) {
+            logger.info(`Applying startup jitter of ${jitterMs}ms before Discord login`)
+            await sleep(jitterMs)
+        }
+    }
+
+    let attempt = 1
+
+    while (true) {
+        try {
+            const attemptLabel = DISCORD_LOGIN_MAX_ATTEMPTS > 0
+                ? `${attempt}/${DISCORD_LOGIN_MAX_ATTEMPTS}`
+                : `${attempt}`
+
+            logger.info(`Discord login attempt ${attemptLabel}`)
+            await loginDiscordWithTimeout()
+            return
+        } catch (err) {
+            const errorMessage = err?.message || String(err)
+            const retryable = shouldRetryLogin(errorMessage)
+            const reachedMax = DISCORD_LOGIN_MAX_ATTEMPTS > 0 && attempt >= DISCORD_LOGIN_MAX_ATTEMPTS
+
+            logger.error(`Discord login failed on attempt ${attempt}: ${errorMessage}`)
+
+            if (!retryable || reachedMax) {
+                throw err
+            }
+
+            const waitMs = getLoginRetryDelayMs(attempt)
+            logger.warn(`Retrying Discord login in ${waitMs}ms...`)
+
+            try {
+                client.destroy()
+            } catch {
+                // Ignore destroy failures between retry attempts.
+            }
+
+            await sleep(waitMs)
+            attempt += 1
+        }
+    }
+}
+
 if (configValidation.isValid) {
-    loginDiscordWithTimeout().catch((err) => {
+    startDiscordWithRetry().catch((err) => {
         logger.error(`Discord login failed: ${err.message}`)
-        logger.error("Troubleshooting: if preflight passed but login timed out, check outbound websocket access to gateway.discord.gg:443")
+        logger.error("Troubleshooting: if preflight passed but login timed out, check outbound websocket access to gateway.discord.gg:443 and reduce simultaneous startups")
     })
 }
 
