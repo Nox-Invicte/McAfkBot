@@ -26,12 +26,18 @@ const DISCORD_LOGIN_TIMEOUT_MS = Number(process.env.DISCORD_LOGIN_TIMEOUT_MS || 
 const DISCORD_PREFLIGHT_TIMEOUT_MS = Number(process.env.DISCORD_PREFLIGHT_TIMEOUT_MS || 10000)
 const DISCORD_PREFLIGHT_MAX_RETRIES = Number(process.env.DISCORD_PREFLIGHT_MAX_RETRIES || 2)
 const DISCORD_PREFLIGHT_COOLDOWN_MS = Number(process.env.DISCORD_PREFLIGHT_COOLDOWN_MS || 300000)
+const DISCORD_PREFLIGHT_MAX_WAIT_MS = Number(process.env.DISCORD_PREFLIGHT_MAX_WAIT_MS || 120000)
 const DISCORD_LOGIN_MAX_ATTEMPTS = Number(process.env.DISCORD_LOGIN_MAX_ATTEMPTS || 0)
 const DISCORD_LOGIN_RETRY_BASE_MS = Number(process.env.DISCORD_LOGIN_RETRY_BASE_MS || 3000)
 const DISCORD_LOGIN_RETRY_MAX_MS = Number(process.env.DISCORD_LOGIN_RETRY_MAX_MS || 60000)
 const DISCORD_STARTUP_JITTER_MAX_MS = Number(process.env.DISCORD_STARTUP_JITTER_MAX_MS || 10000)
 
 let preflightCooldownUntil = 0
+
+function clampWaitMs(valueMs, fallbackMs = 3000) {
+    if (!Number.isFinite(valueMs) || valueMs < 0) return fallbackMs
+    return Math.min(Math.max(1000, Math.ceil(valueMs)), DISCORD_PREFLIGHT_MAX_WAIT_MS)
+}
 
 function getTokenFingerprint(token) {
     if (!token) return "none"
@@ -53,30 +59,35 @@ function parseJsonSafe(value) {
 function getRetryDelayMs(response) {
     const retryAfterHeader = response.headers?.["retry-after"]
     if (retryAfterHeader !== undefined) {
-        const retryAfterSeconds = Number(retryAfterHeader)
-        if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
-            return Math.max(1000, Math.ceil(retryAfterSeconds * 1000))
+        const retryAfterNumeric = Number(retryAfterHeader)
+        if (Number.isFinite(retryAfterNumeric) && retryAfterNumeric >= 0) {
+            // Some proxies send retry-after as milliseconds while RFC uses seconds.
+            const interpretedMs = retryAfterNumeric > 1000
+                ? retryAfterNumeric
+                : retryAfterNumeric * 1000
+
+            return clampWaitMs(interpretedMs)
         }
 
         const retryAfterDate = Date.parse(String(retryAfterHeader))
         if (Number.isFinite(retryAfterDate)) {
-            return Math.max(1000, retryAfterDate - Date.now())
+            return clampWaitMs(retryAfterDate - Date.now())
         }
     }
 
     const resetAfterHeader = Number(response.headers?.["x-ratelimit-reset-after"])
     if (Number.isFinite(resetAfterHeader) && resetAfterHeader >= 0) {
-        return Math.max(1000, Math.ceil(resetAfterHeader * 1000))
+        return clampWaitMs(resetAfterHeader * 1000)
     }
 
     const body = parseJsonSafe(response.body)
 
     const retryAfterSeconds = Number(body?.retry_after)
     if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
-        return Math.max(1000, Math.ceil(retryAfterSeconds * 1000))
+        return clampWaitMs(retryAfterSeconds * 1000)
     }
 
-    return 3000
+    return clampWaitMs(3000)
 }
 
 function getLoginRetryDelayMs(attemptNumber) {
