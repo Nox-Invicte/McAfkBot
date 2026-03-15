@@ -20,6 +20,8 @@ const client = new Client({
     ]
 })
 
+const DISCORD_LOGIN_TIMEOUT_MS = Number(process.env.DISCORD_LOGIN_TIMEOUT_MS || 30000)
+
 function safeReply(message, content) {
     message.reply(content).catch((err) => {
         logger.error(`Failed to send Discord reply: ${err.message}`)
@@ -34,7 +36,7 @@ function startMinecraftBotSafe(discordClient) {
 
 client.once("ready",()=>{
 
-    console.log("Discord bot ready")
+    logger.info(`Discord bot ready as ${client.user?.tag || "unknown-user"}`)
 
     startMinecraftBotSafe(client)
 
@@ -44,8 +46,16 @@ client.on("error", (err) => {
     logger.error(`Discord client error: ${err.message}`)
 })
 
+client.on("warn", (warning) => {
+    logger.warn(`Discord client warning: ${warning}`)
+})
+
 client.on("shardError", (err) => {
     logger.error(`Discord shard error: ${err.message}`)
+})
+
+client.on("invalidated", () => {
+    logger.error("Discord session invalidated. Token may have been rotated.")
 })
 
 client.on("messageCreate",(msg)=>{
@@ -98,15 +108,25 @@ client.on("messageCreate",(msg)=>{
 
 })
 
+async function loginDiscordWithTimeout() {
+    logger.info(`Attempting Discord login (timeout: ${DISCORD_LOGIN_TIMEOUT_MS}ms)...`)
+
+    const loginPromise = client.login(config.discordToken)
+    const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+            reject(new Error(`Discord login timed out after ${DISCORD_LOGIN_TIMEOUT_MS}ms`))
+        }, DISCORD_LOGIN_TIMEOUT_MS)
+    })
+
+    await Promise.race([loginPromise, timeoutPromise])
+    logger.info("Discord login request accepted")
+}
+
 if (configValidation.isValid) {
-    logger.info("Attempting Discord login...")
-    client.login(config.discordToken)
-        .then(() => {
-            logger.info("Discord login request accepted")
-        })
-        .catch((err) => {
-            logger.error(`Discord login failed: ${err.message}`)
-        })
+    loginDiscordWithTimeout().catch((err) => {
+        logger.error(`Discord login failed: ${err.message}`)
+        logger.error("Troubleshooting: verify DISCORD_TOKEN is current, has no quotes/prefix, and host can reach discord.com")
+    })
 }
 
 module.exports = client

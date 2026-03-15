@@ -14,8 +14,26 @@ function parsePort(value, defaultPort = 19132) {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultPort
 }
 
+function sanitizeDiscordToken(value) {
+    if (value === undefined || value === null) return value
+
+    let token = String(value).trim()
+
+    // Common copy/paste issues in env vars.
+    if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+        token = token.slice(1, -1).trim()
+    }
+
+    // discord.js expects a raw token without the "Bot " prefix.
+    if (token.toLowerCase().startsWith("bot ")) {
+        token = token.slice(4).trim()
+    }
+
+    return token
+}
+
 const config = {
-    discordToken: process.env.DISCORD_TOKEN,
+    discordToken: sanitizeDiscordToken(process.env.DISCORD_TOKEN),
     server: process.env.MC_SERVER,
     port: parsePort(process.env.MC_PORT),
     username: process.env.MC_USERNAME,
