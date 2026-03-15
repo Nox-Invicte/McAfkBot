@@ -3,6 +3,8 @@ const logger = require("../utils/logger")
 
 function sendLog(client, message){
 
+    if(!client || !client.channels || !config.logChannel) return
+
     const channel = client.channels.cache.get(config.logChannel)
 
     if(channel){

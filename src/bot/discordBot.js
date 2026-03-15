@@ -7,13 +7,6 @@ const logger = require("../utils/logger")
 
 const { startMinecraftBot, stopMinecraftBot, getStatus, sendMessage } = require("./minecraftBot")
 
-const configValidation = config.validateRequiredConfig()
-
-if (!configValidation.isValid) {
-    logger.error(`Missing required environment variables: ${configValidation.missing.join(", ")}`)
-    logger.error("Set these variables in Render (Environment tab) and redeploy.")
-}
-
 const client = new Client({
     intents:[
         Intents.FLAGS.GUILD_MESSAGES,
@@ -27,10 +20,32 @@ const DISCORD_PREFLIGHT_TIMEOUT_MS = Number(process.env.DISCORD_PREFLIGHT_TIMEOU
 const DISCORD_PREFLIGHT_MAX_RETRIES = Number(process.env.DISCORD_PREFLIGHT_MAX_RETRIES || 2)
 const DISCORD_PREFLIGHT_COOLDOWN_MS = Number(process.env.DISCORD_PREFLIGHT_COOLDOWN_MS || 300000)
 const DISCORD_PREFLIGHT_MAX_WAIT_MS = Number(process.env.DISCORD_PREFLIGHT_MAX_WAIT_MS || 120000)
-const DISCORD_LOGIN_MAX_ATTEMPTS = Number(process.env.DISCORD_LOGIN_MAX_ATTEMPTS || 0)
+const DISCORD_LOGIN_MAX_ATTEMPTS = 3
 const DISCORD_LOGIN_RETRY_BASE_MS = Number(process.env.DISCORD_LOGIN_RETRY_BASE_MS || 3000)
 const DISCORD_LOGIN_RETRY_MAX_MS = Number(process.env.DISCORD_LOGIN_RETRY_MAX_MS || 60000)
 const DISCORD_STARTUP_JITTER_MAX_MS = Number(process.env.DISCORD_STARTUP_JITTER_MAX_MS || 10000)
+const MINECRAFT_START_DELAY_MS = 30000
+
+const hasDiscordToken = Boolean(config.discordToken && String(config.discordToken).trim() !== "")
+const missingMinecraftConfig = []
+
+if (!config.server || String(config.server).trim() === "") {
+    missingMinecraftConfig.push("MC_SERVER")
+}
+
+if (!config.username || String(config.username).trim() === "") {
+    missingMinecraftConfig.push("MC_USERNAME")
+}
+
+const canStartMinecraft = missingMinecraftConfig.length === 0
+
+if (!hasDiscordToken) {
+    logger.warn("DISCORD_TOKEN is missing. Discord login will be skipped.")
+}
+
+if (!canStartMinecraft) {
+    logger.error(`Minecraft startup disabled. Missing required environment variables: ${missingMinecraftConfig.join(", ")}`)
+}
 
 let preflightCooldownUntil = 0
 
@@ -243,15 +258,28 @@ function safeReply(message, content) {
 }
 
 function startMinecraftBotSafe(discordClient) {
+    if (!canStartMinecraft) return
+
     startMinecraftBot(discordClient).catch((err) => {
         logger.error(`Minecraft bot failed to start: ${err.message}`)
     })
 }
 
+function scheduleMinecraftStartup() {
+    logger.info(`Minecraft startup scheduled in ${MINECRAFT_START_DELAY_MS}ms (independent of Discord login)`)
+
+    setTimeout(() => {
+        startMinecraftBotSafe(null)
+    }, MINECRAFT_START_DELAY_MS)
+}
+
+scheduleMinecraftStartup()
+
 client.once("ready",()=>{
 
     logger.info(`Discord bot ready as ${client.user?.tag || "unknown-user"}`)
 
+    // If Minecraft is already running, this call updates it to use the live Discord client.
     startMinecraftBotSafe(client)
 
 })
@@ -349,25 +377,26 @@ async function startDiscordWithRetry() {
         }
     }
 
-    let attempt = 1
+    let lastError = null
 
-    while (true) {
+    for (let attempt = 1; attempt <= DISCORD_LOGIN_MAX_ATTEMPTS; attempt++) {
         try {
-            const attemptLabel = DISCORD_LOGIN_MAX_ATTEMPTS > 0
-                ? `${attempt}/${DISCORD_LOGIN_MAX_ATTEMPTS}`
-                : `${attempt}`
-
-            logger.info(`Discord login attempt ${attemptLabel}`)
+            logger.info(`Discord login attempt ${attempt}/${DISCORD_LOGIN_MAX_ATTEMPTS}`)
             await loginDiscordWithTimeout()
             return
         } catch (err) {
+            lastError = err
             const errorMessage = err?.message || String(err)
             const retryable = shouldRetryLogin(errorMessage)
-            const reachedMax = DISCORD_LOGIN_MAX_ATTEMPTS > 0 && attempt >= DISCORD_LOGIN_MAX_ATTEMPTS
 
             logger.error(`Discord login failed on attempt ${attempt}: ${errorMessage}`)
 
-            if (!retryable || reachedMax) {
+            const isLastAttempt = attempt >= DISCORD_LOGIN_MAX_ATTEMPTS
+
+            if (!retryable || isLastAttempt) {
+                if (isLastAttempt) {
+                    logger.error(`Discord login stopped after ${DISCORD_LOGIN_MAX_ATTEMPTS} failed attempts`)
+                }
                 throw err
             }
 
@@ -386,12 +415,13 @@ async function startDiscordWithRetry() {
             }
 
             await sleep(waitMs)
-            attempt += 1
         }
     }
+
+    throw lastError || new Error("Discord login failed")
 }
 
-if (configValidation.isValid) {
+if (hasDiscordToken) {
     startDiscordWithRetry().catch((err) => {
         logger.error(`Discord login failed: ${err.message}`)
         logger.error("Troubleshooting: if preflight passed but login timed out, check outbound websocket access to gateway.discord.gg:443 and reduce simultaneous startups")

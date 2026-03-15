@@ -10,6 +10,7 @@ const { sendLog } = require("../handlers/logHandler")
 const { sendChat } = require("../handlers/chatHandler")
 
 let mcClient = null
+let activeDiscordClient = null
 const lastErrorLogTime = new Map()
 const suppressedNonFatalErrors = new Set()
 
@@ -138,6 +139,10 @@ function restoreAuthFromEnv() {
 
 async function startMinecraftBot(discordClient){
 
+    if (discordClient) {
+        activeDiscordClient = discordClient
+    }
+
     if(mcClient) return
 
     logger.info("Starting Minecraft bot")
@@ -176,7 +181,7 @@ async function startMinecraftBot(discordClient){
     mcClient.on("spawn", () => {
 
         logger.info("Player spawned")
-        sendLog(discordClient,"✅ Spawned in Minecraft server")
+        sendLog(activeDiscordClient,"✅ Spawned in Minecraft server")
 
         setTimeout(()=>{
 
@@ -194,10 +199,10 @@ async function startMinecraftBot(discordClient){
                         message: config.joinCommand
                     })
 
-                    sendLog(discordClient,`⚡ Sent command: ${config.joinCommand}`)
+                    sendLog(activeDiscordClient,`⚡ Sent command: ${config.joinCommand}`)
                 } catch(err) {
                     logger.error(`Error sending command: ${err.message}`)
-                    sendLog(discordClient,`❌ Failed to send command: ${err.message}`)
+                    sendLog(activeDiscordClient,`❌ Failed to send command: ${err.message}`)
                 }
 
             } else {
@@ -220,7 +225,7 @@ async function startMinecraftBot(discordClient){
         if(shouldIgnoreIncomingMessage(cleanMessage)) return
 
         logger.info(`[MC Chat] ${cleanMessage}`)
-        sendChat(discordClient, cleanMessage)
+        sendChat(activeDiscordClient, cleanMessage)
 
     })
 
@@ -228,15 +233,15 @@ async function startMinecraftBot(discordClient){
 
         logger.warn("Disconnected")
 
-        sendLog(discordClient,`❌ Disconnected: ${reason}`)
+        sendLog(activeDiscordClient,`❌ Disconnected: ${reason}`)
 
         mcClient = null
 
         setTimeout(()=>{
 
-            sendLog(discordClient,"🔄 Reconnecting...")
+            sendLog(activeDiscordClient,"🔄 Reconnecting...")
 
-            startMinecraftBot(discordClient).catch((err) => {
+            startMinecraftBot(activeDiscordClient).catch((err) => {
                 logger.error(`Reconnect attempt failed: ${err.message}`)
             })
 
@@ -262,7 +267,7 @@ async function startMinecraftBot(discordClient){
 
         logger.error(message)
 
-        sendLog(discordClient,`⚠️ Error: ${message}`)
+        sendLog(activeDiscordClient,`⚠️ Error: ${message}`)
 
     })
 
