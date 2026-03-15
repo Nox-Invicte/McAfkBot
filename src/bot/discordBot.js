@@ -24,10 +24,34 @@ const client = new Client({
 
 const DISCORD_LOGIN_TIMEOUT_MS = Number(process.env.DISCORD_LOGIN_TIMEOUT_MS || 30000)
 const DISCORD_PREFLIGHT_TIMEOUT_MS = Number(process.env.DISCORD_PREFLIGHT_TIMEOUT_MS || 10000)
+const DISCORD_PREFLIGHT_MAX_RETRIES = Number(process.env.DISCORD_PREFLIGHT_MAX_RETRIES || 2)
 
 function getTokenFingerprint(token) {
     if (!token) return "none"
     return crypto.createHash("sha256").update(token).digest("hex").slice(0, 12)
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function parseJsonSafe(value) {
+    try {
+        return JSON.parse(value)
+    } catch {
+        return null
+    }
+}
+
+function getRetryDelayMs(response) {
+    const body = parseJsonSafe(response.body)
+
+    const retryAfterSeconds = Number(body?.retry_after)
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+        return Math.max(1000, Math.ceil(retryAfterSeconds * 1000))
+    }
+
+    return 3000
 }
 
 function discordApiRequest(pathname) {
@@ -70,25 +94,49 @@ function discordApiRequest(pathname) {
 async function runDiscordPreflight() {
     logger.info(`Discord API preflight check (timeout: ${DISCORD_PREFLIGHT_TIMEOUT_MS}ms)...`)
 
-    const me = await discordApiRequest("/api/v10/users/@me")
+    async function checkEndpoint({ name, path, onSuccessMessage }) {
+        let response = null
 
-    if (me.status === 401) {
-        throw new Error("DISCORD_TOKEN rejected by Discord API (401 Unauthorized)")
+        for (let attempt = 0; attempt <= DISCORD_PREFLIGHT_MAX_RETRIES; attempt++) {
+            response = await discordApiRequest(path)
+
+            if (response.status === 429) {
+                const waitMs = getRetryDelayMs(response)
+
+                if (attempt < DISCORD_PREFLIGHT_MAX_RETRIES) {
+                    logger.warn(`${name} preflight rate-limited (429). Retrying in ${waitMs}ms...`)
+                    await sleep(waitMs)
+                    continue
+                }
+
+                logger.warn(`${name} preflight still rate-limited after retries. Continuing with login attempt.`)
+                return
+            }
+
+            if (response.status === 401) {
+                throw new Error("DISCORD_TOKEN rejected by Discord API (401 Unauthorized)")
+            }
+
+            if (response.status < 200 || response.status >= 300) {
+                throw new Error(`Discord API preflight failed for ${path} with status ${response.status}`)
+            }
+
+            logger.info(onSuccessMessage)
+            return
+        }
     }
 
-    if (me.status < 200 || me.status >= 300) {
-        throw new Error(`Discord API preflight failed for /users/@me with status ${me.status}`)
-    }
+    await checkEndpoint({
+        name: "/users/@me",
+        path: "/api/v10/users/@me",
+        onSuccessMessage: "Discord token accepted by API"
+    })
 
-    logger.info("Discord token accepted by API")
-
-    const gateway = await discordApiRequest("/api/v10/gateway/bot")
-
-    if (gateway.status < 200 || gateway.status >= 300) {
-        throw new Error(`Discord API preflight failed for /gateway/bot with status ${gateway.status}`)
-    }
-
-    logger.info("Discord gateway endpoint reachable via HTTPS")
+    await checkEndpoint({
+        name: "/gateway/bot",
+        path: "/api/v10/gateway/bot",
+        onSuccessMessage: "Discord gateway endpoint reachable via HTTPS"
+    })
 }
 
 function safeReply(message, content) {
