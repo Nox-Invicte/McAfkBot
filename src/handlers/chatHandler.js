@@ -7,9 +7,11 @@ const { URL } = require("url")
 const WEBHOOK_MAX_QUEUE_SIZE = 500
 const WEBHOOK_BASE_DELAY_MS = 450
 const WEBHOOK_MAX_RETRIES = 5
+const WEBHOOK_COOLDOWN_MS = 60 * 60 * 1000
 
 const webhookQueue = []
 let webhookProcessing = false
+let webhookCooldownUntil = 0
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
@@ -61,6 +63,10 @@ function sendChat(client, message){
 function sendWebhook(webhookURL, data) {
     if (!webhookURL) return
 
+    if (webhookCooldownUntil > Date.now()) {
+        return
+    }
+
     if (webhookQueue.length >= WEBHOOK_MAX_QUEUE_SIZE) {
         webhookQueue.shift()
         logger.warn("Webhook queue full, dropping oldest message")
@@ -75,6 +81,11 @@ async function processWebhookQueue() {
     webhookProcessing = true
 
     while (webhookQueue.length > 0) {
+        if (webhookCooldownUntil > Date.now()) {
+            webhookQueue.length = 0
+            break
+        }
+
         const next = webhookQueue.shift()
         const result = await sendWebhookRequest(next.webhookURL, next.data)
 
@@ -87,7 +98,9 @@ async function processWebhookQueue() {
                 continue
             }
 
-            logger.error("Webhook dropped after max retries due to repeated 429 responses")
+            webhookCooldownUntil = Date.now() + WEBHOOK_COOLDOWN_MS
+            webhookQueue.length = 0
+            logger.error(`Webhook dropped after max retries due to repeated 429 responses. Cooling down for ${Math.ceil(WEBHOOK_COOLDOWN_MS / 60000)} minutes`)
             await delay(WEBHOOK_BASE_DELAY_MS)
             continue
         }

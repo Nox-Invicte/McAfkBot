@@ -23,6 +23,7 @@ const DISCORD_PREFLIGHT_MAX_WAIT_MS = Number(process.env.DISCORD_PREFLIGHT_MAX_W
 const DISCORD_LOGIN_MAX_ATTEMPTS = 3
 const DISCORD_LOGIN_RETRY_BASE_MS = Number(process.env.DISCORD_LOGIN_RETRY_BASE_MS || 3000)
 const DISCORD_LOGIN_RETRY_MAX_MS = Number(process.env.DISCORD_LOGIN_RETRY_MAX_MS || 60000)
+const DISCORD_LOGIN_RETRY_GAP_MAX_MS = 10000
 const DISCORD_STARTUP_JITTER_MAX_MS = Number(process.env.DISCORD_STARTUP_JITTER_MAX_MS || 10000)
 const MINECRAFT_START_DELAY_MS = 30000
 
@@ -404,6 +405,10 @@ async function startDiscordWithRetry() {
             const retryAfterMs = Number(err?.retryAfterMs)
             if (Number.isFinite(retryAfterMs) && retryAfterMs > waitMs) {
                 waitMs = retryAfterMs
+            }
+
+            if (waitMs > DISCORD_LOGIN_RETRY_GAP_MAX_MS) {
+                waitMs = DISCORD_LOGIN_RETRY_GAP_MAX_MS
             }
 
             logger.warn(`Retrying Discord login in ${waitMs}ms...`)
