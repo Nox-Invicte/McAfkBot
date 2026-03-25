@@ -1,5 +1,14 @@
 require("dotenv").config()
 
+function getLatestBedrockVersion() {
+    try {
+        return require("bedrock-protocol/src/options").CURRENT_VERSION
+    } catch {
+        // Fallback if package internals change.
+        return "1.26.0"
+    }
+}
+
 function parseBoolean(value, defaultValue = false) {
     if (value === undefined) return defaultValue
 
@@ -7,7 +16,7 @@ function parseBoolean(value, defaultValue = false) {
     return ["1", "true", "yes", "on"].includes(normalized)
 }
 
-const LATEST_BEDROCK_VERSION = "1.26.0"
+const LATEST_BEDROCK_VERSION = getLatestBedrockVersion()
 
 function parsePort(value, defaultPort = 19132) {
     const parsed = Number(value)
