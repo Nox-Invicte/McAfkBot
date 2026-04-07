@@ -9,6 +9,24 @@ const WEBHOOK_BASE_DELAY_MS = 450
 const WEBHOOK_MAX_RETRIES = 5
 const WEBHOOK_COOLDOWN_MS = 60 * 60 * 1000
 
+const KNOWN_RANKS = new Set([
+    "SEEDLING",
+    "SAPLING",
+    "OAK",
+    "JUNGLE",
+    "HELPER",
+    "ADMIN",
+    "MOD",
+    "OWNER",
+    "MEMBER"
+])
+
+const CHAT_SEPARATOR_REGEX = /^(.+?)\s*(?:▶|»|:|>)\s*(.+)$/
+const PLAYER_EVENT_REGEXES = [
+    /^(?:☠\s*)?([._A-Za-z0-9]{2,20})\s+(?:was|died|fell|tried|blew|burned|hit|walked|went|starved|suffocated|froze|withered|got|slain|killed)\b/i,
+    /^([._A-Za-z0-9]{2,20})\s+(?:joined|left|quit|disconnected)\b/i
+]
+
 const webhookQueue = []
 let webhookProcessing = false
 let webhookCooldownUntil = 0
@@ -21,17 +39,14 @@ function sendChat(client, message){
 
     if(!message || message.trim() === "") return
 
-    // Try to parse player message - capture everything before separator as username
-    const playerMatch = message.match(/^(.+?)\s*(?:»|:|>)\s*(.+)$/)
+    const parsedMessage = parsePlayerMessage(message.trim())
+    if (!parsedMessage) return
     
-    if(config.chatWebhook && playerMatch) {
+    if(config.chatWebhook) {
         // Player message - send via webhook with full rank/level and player name
-        const fullUsername = playerMatch[1].trim()
-        const content = playerMatch[2].trim()
-        
-        // Extract just the player name (last word with optional *) for avatar
-        const playerNameMatch = fullUsername.match(/(\*?\w+)\s*$/)
-        const playerName = playerNameMatch ? playerNameMatch[1] : fullUsername
+        const fullUsername = parsedMessage.username
+        const content = parsedMessage.content
+        const playerName = parsedMessage.playerName
         const avatarURL = `https://mc-heads.net/avatar/${playerName}/100`
         
         sendWebhook(config.chatWebhook, {
@@ -39,25 +54,73 @@ function sendChat(client, message){
             username: fullUsername,
             avatar_url: avatarURL
         })
-    } else if(config.chatWebhook) {
-        // Server message - send as "SERVER"
-        sendWebhook(config.chatWebhook, {
-            content: message,
-            username: "SERVER",
-            avatar_url: "https://mc-heads.net/avatar/MHF_Steve/100"
-        })
     } else {
         // Fallback to regular channel message
         if(!client || !client.channels || !config.chatChannel) return
 
         const channel = client.channels.cache.get(config.chatChannel)
         if(channel){
-            channel.send(message).catch((err) => {
+            const fallbackText = parsedMessage.type === "chat"
+                ? `${parsedMessage.username} ▶ ${parsedMessage.content}`
+                : parsedMessage.content
+
+            channel.send(fallbackText).catch((err) => {
                 logger.error(`Failed to send chat message to channel: ${err.message}`)
             })
         }
     }
 
+}
+
+function parsePlayerMessage(message) {
+    const chatMatch = message.match(CHAT_SEPARATOR_REGEX)
+
+    if (chatMatch) {
+        const leftSide = chatMatch[1].trim()
+        const content = chatMatch[2].trim()
+        const rankToken = leftSide.split(/\s+/)[0]?.toUpperCase()
+
+        if (KNOWN_RANKS.has(rankToken) && content) {
+            const playerName = extractPlayerName(leftSide)
+
+            return {
+                type: "chat",
+                username: leftSide,
+                content,
+                playerName
+            }
+        }
+
+        return null
+    }
+
+    for (const regex of PLAYER_EVENT_REGEXES) {
+        const match = message.match(regex)
+        if (match) {
+            return {
+                type: "event",
+                username: match[1],
+                content: message,
+                playerName: match[1]
+            }
+        }
+    }
+
+    return null
+}
+
+function extractPlayerName(prefix) {
+    // Pick the first Minecraft-style username token instead of rank/tag decorations.
+    const tokens = prefix.split(/\s+/)
+    for (const token of tokens) {
+        const cleaned = token.replace(/[^._A-Za-z0-9]/g, "")
+        if (/^[._A-Za-z0-9]{2,20}$/.test(cleaned) && !KNOWN_RANKS.has(cleaned.toUpperCase())) {
+            return cleaned
+        }
+    }
+
+    const fallback = prefix.match(/([._A-Za-z0-9]{2,20})/)
+    return fallback ? fallback[1] : "MHF_Steve"
 }
 
 function sendWebhook(webhookURL, data) {
