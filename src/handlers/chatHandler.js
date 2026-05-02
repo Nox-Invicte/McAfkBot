@@ -78,9 +78,9 @@ function parsePlayerMessage(message) {
     if (chatMatch) {
         const leftSide = chatMatch[1].trim()
         const content = chatMatch[2].trim()
-        const rankToken = leftSide.split(/\s+/)[0]?.toUpperCase()
 
-        if (KNOWN_RANKS.has(rankToken) && content) {
+        // Accept any message with content, regardless of rank or prefix
+        if (content) {
             const playerName = extractPlayerName(leftSide)
 
             return {
@@ -110,16 +110,20 @@ function parsePlayerMessage(message) {
 }
 
 function extractPlayerName(prefix) {
-    // Pick the first Minecraft-style username token instead of rank/tag decorations.
-    const tokens = prefix.split(/\s+/)
+    // Remove chat tags (text in square brackets) to expose player name and emoji ranks
+    const withoutTags = prefix.replace(/\[.*?\]/g, "").trim()
+    
+    // Find the first token that looks like a Minecraft username (2-20 alphanumeric/underscore/dot)
+    const tokens = withoutTags.split(/\s+/)
     for (const token of tokens) {
         const cleaned = token.replace(/[^._A-Za-z0-9]/g, "")
-        if (/^[._A-Za-z0-9]{2,20}$/.test(cleaned) && !KNOWN_RANKS.has(cleaned.toUpperCase())) {
+        if (/^[._A-Za-z0-9]{2,20}$/.test(cleaned)) {
             return cleaned
         }
     }
 
-    const fallback = prefix.match(/([._A-Za-z0-9]{2,20})/)
+    // Fallback: look for any alphanumeric sequence
+    const fallback = withoutTags.match(/([._A-Za-z0-9]{2,20})/)
     return fallback ? fallback[1] : "MHF_Steve"
 }
 
